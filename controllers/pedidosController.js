@@ -115,12 +115,11 @@ export const autorizarGestion = async (req, res) => {
     console.log(`[AUTH-TRACE] Transacción SQL iniciada correctamente.`);
 
     try {
-      // A. Descuento de Presupuesto
-      console.log(`[AUTH-TRACE] Descontando $${total} al Plantel ID: ${plantel_id}`);
-      await transaction.request()
-        .input('monto', sql.Decimal(18, 2), total)
-        .input('p_id', sql.Int, plantel_id)
-        .query("UPDATE PresupuestosPlanteles SET presupuesto_mensual -= @monto, ultima_actualizacion = GETDATE() WHERE id = @p_id");
+      
+      // --- BLOQUE ELIMINADO ---
+      // El descuento de presupuesto al plantel ya NO se hace aquí.
+      // Se hará únicamente durante el "Cierre Mensual".
+      // ------------------------
 
       // B. Obtención y Descuento de Stock
       const articulos = await transaction.request()
@@ -170,7 +169,7 @@ export const autorizarGestion = async (req, res) => {
     res.status(500).json({ ok: false, mensaje: "Error en el servidor: " + err.message });
   }
 };
-// 5. Métricas: INDISPENSABLE para el Dashboard del Front (Evita los ceros)
+
 export const getMetricasPorPlantel = async (req, res) => {
   try {
     const { nombre } = req.params;
@@ -180,20 +179,21 @@ export const getMetricasPorPlantel = async (req, res) => {
       .input('nombre', sql.NVarChar, nombre)
       .query(`
         SELECT 
-          5000.00 as presupuesto_inicial, 
-          presupuesto_mensual as saldo_pendiente,
-          (5000.00 - presupuesto_mensual) as gasto_total
-        FROM PresupuestosPlanteles 
-        WHERE usuario_nombre = @nombre
+          ISNULL(PR.presupuesto_mensual, 0) as presupuesto_inicial,
+          ISNULL(SUM(CAST(P.total_pedido AS FLOAT)), 0) as gasto_total
+        FROM PresupuestosPlanteles PR
+        LEFT JOIN Pedidos P ON PR.usuario_nombre = P.usuario_nombre AND P.estatus = 'AUTORIZADO'
+        WHERE PR.usuario_nombre = @nombre
+        GROUP BY PR.presupuesto_mensual
       `);
 
     if (result.recordset.length > 0) {
       res.json({ ok: true, metricas: result.recordset[0] });
     } else {
-      res.status(404).json({ ok: false, mensaje: 'Plantel no encontrado' });
+      res.status(404).json({ ok: false, mensaje: 'Plantel no encontrado en presupuestos' });
     }
   } catch (err) {
-    console.error("Error al obtener métricas:", err);
-    res.status(500).json({ ok: false, mensaje: 'Error del servidor' });
+    console.error("Error al obtener métricas reales:", err);
+    res.status(500).json({ ok: false, mensaje: 'Error del servidor al calcular métricas' });
   }
 };

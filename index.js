@@ -3,7 +3,7 @@ import cors from 'cors';
 import { poolPromise, sql } from './config/db.js'; 
 import articulosRoutes from './routes/articulos.js';
 import pedidosRoutes from './routes/pedidos.js'; 
-import reportesRoutes from './routes/reportesRoutes.js';
+import reportesRoutes from './routes/administracionRoutes.js';
 import categoriaRoutes from './routes/categorias.js';
 import unidadesRoutes from './routes/unidades.js';
 
@@ -62,10 +62,9 @@ app.use((req, res) => {
   });
 });
 
+// --- INICIO DEL SERVIDOR ---
 const PORT = 3001;
 app.listen(PORT, () => {
-  console.log(`===========================================`);
   console.log(`Servidor USAG en: http://localhost:${PORT}`);
-  console.log(`Reportes: http://localhost:${PORT}/api/reportes`);
-  console.log(`===========================================`);
+
 });

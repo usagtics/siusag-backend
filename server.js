@@ -4,7 +4,7 @@ import cors from 'cors';
 import { connectDB } from './config/db.js';
 import articulosRoutes from './routes/articulos.js';
 import pedidosRoutes from './routes/pedidos.js';
-import reportesRoutes from './routes/reportesRoutes.js';
+import reportesRoutes from './routes/administracionRoutes.js';
 import categoriaRoutes from './routes/categorias.js';
 import { getUnidadesMedida } from './controllers/unidadesController.js';
 

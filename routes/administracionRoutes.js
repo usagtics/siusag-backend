@@ -7,7 +7,7 @@ import {
     generarCorteOficial,
     getHistorialCortes,
     getMetricasPlantel 
-} from '../controllers/reportesController.js';
+} from '../controllers/administracionController.js';
 
 router.get('/metricas', getMetricasGenerales);
 router.get('/top-articulos', getTopArticulos);

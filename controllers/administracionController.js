@@ -2,41 +2,66 @@ import { poolPromise, sql } from '../config/db.js';
 
 
 export const generarCorteOficial = async (req, res) => {
-  const { periodo, creado_por } = req.body;
-
-  if (!periodo) {
-    return res.status(400).json({ ok: false, mensaje: "El nombre del periodo es obligatorio (ej. Enero 2026)" });
+  // 1. Recibimos el periodo, quién lo creó y el ¡NUEVO CAPITAL!
+  const { periodo, nuevo_capital, creado_por } = req.body;
+  
+  if (!periodo || nuevo_capital === undefined) {
+    return res.status(400).json({ ok: false, mensaje: "El periodo y el capital son obligatorios" });
   }
+
+  const pool = await poolPromise;
+  const transaction = new sql.Transaction(pool);
 
   try {
-    const pool = await poolPromise;
+    await transaction.begin();
     
-    const result = await pool.request()
-      .input("periodo", sql.NVarChar, periodo)
-      .input("autor", sql.NVarChar, creado_por || 'Sistema Administrativo')
-      .query(`
-        INSERT INTO ReportesFinancieros (mes_reportado, usuario_nombre, gasto_total, total_articulos, creado_por)
-        SELECT 
-          @periodo, 
-          usuario_nombre, 
-          SUM(CAST(total_pedido AS FLOAT)), 
-          COUNT(id),
-          @autor
-        FROM Pedidos 
-        WHERE estatus = 'AUTORIZADO'
-        GROUP BY usuario_nombre
-      `);
-    
-    res.json({ 
-      ok: true, 
-      mensaje: `El corte de caja para '${periodo}' se ha guardado correctamente.` 
-    });
+    // PASO A: Guardar Historial de lo que se gastó (Esto no cambia)
+    const r1 = new sql.Request(transaction);
+    await r1.input("per", sql.NVarChar, periodo)
+            .input("aut", sql.NVarChar, creado_por || 'Admin')
+            .query(`
+              INSERT INTO ReportesFinancieros (mes_reportado, usuario_nombre, gasto_total, total_articulos, creado_por)
+              SELECT 
+                @per, 
+                PR.usuario_nombre, 
+                ISNULL(SUM(CAST(P.total_pedido AS FLOAT)), 0), 
+                COUNT(P.id), 
+                @aut
+              FROM PresupuestosPlanteles PR
+              LEFT JOIN Pedidos P ON PR.usuario_nombre = P.usuario_nombre AND P.estatus = 'AUTORIZADO'
+              GROUP BY PR.usuario_nombre
+            `);
+
+    // PASO B: Lógica de Arrastre + Inyección de Capital (¡Aquí está la magia!)
+    // Fórmula: (Saldo Viejo - Lo que gastaron este mes) + Nuevo Capital = Nuevo Saldo
+    const r2 = new sql.Request(transaction);
+    await r2.input("nuevoCap", sql.Decimal(18,2), nuevo_capital)
+            .query(`
+              UPDATE PR
+              SET 
+                PR.presupuesto_mensual = (PR.presupuesto_mensual - ISNULL(GastoMes.Total, 0)) + @nuevoCap,
+                PR.ultima_actualizacion = GETDATE()
+              FROM PresupuestosPlanteles PR
+              OUTER APPLY (
+                SELECT SUM(CAST(P.total_pedido AS FLOAT)) as Total
+                FROM Pedidos P
+                WHERE P.usuario_nombre = PR.usuario_nombre 
+                  AND P.estatus = 'AUTORIZADO'
+              ) GastoMes
+            `);
+
+    // PASO C: Limpiar pedidos para el nuevo mes (Esto no cambia)
+    const r3 = new sql.Request(transaction);
+    await r3.query("UPDATE Pedidos SET estatus = 'CERRADO' WHERE estatus = 'AUTORIZADO'");
+
+    await transaction.commit();
+    res.json({ ok: true, mensaje: `Corte ${periodo} finalizado. Se aplicaron los remanentes y se inyectaron $${nuevo_capital}.` });
+
   } catch (err) {
-    console.error("Error en generarCorteOficial:", err);
-    res.status(500).json({ ok: false, mensaje: "Error al persistir el reporte: " + err.message });
+    if (transaction && transaction.active) await transaction.rollback();
+    res.status(500).json({ ok: false, mensaje: "Error: " + err.message });
   }
 };
-
 export const getMetricasPlantel = async (req, res) => {
   const { nombre } = req.params; 
 
