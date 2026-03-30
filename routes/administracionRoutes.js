@@ -6,7 +6,8 @@ import {
     getDetallePorPlantel,
     generarCorteOficial,
     getHistorialCortes,
-    getMetricasPlantel 
+    getMetricasPlantel,
+    confirmarEntrega 
 } from '../controllers/administracionController.js';
 
 router.get('/metricas', getMetricasGenerales);
@@ -15,5 +16,7 @@ router.get('/detalle/:nombre', getDetallePorPlantel);
 router.get('/historial', getHistorialCortes); 
 router.post('/guardar-corte', generarCorteOficial); 
 router.get('/metricas-plantel/:nombre', getMetricasPlantel);
+
+router.put('/solicitudes/:id_solicitud/entregar', confirmarEntrega);
 
 export default router;

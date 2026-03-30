@@ -1,6 +1,5 @@
 import { poolPromise, sql } from '../config/db.js';
 
-
 export const generarCorteOficial = async (req, res) => {
   // 1. Recibimos el periodo, quién lo creó y el ¡NUEVO CAPITAL!
   const { periodo, nuevo_capital, creado_por } = req.body;
@@ -15,7 +14,7 @@ export const generarCorteOficial = async (req, res) => {
   try {
     await transaction.begin();
     
-    // PASO A: Guardar Historial de lo que se gastó (Esto no cambia)
+    // PASO A: Guardar Historial de lo que se gastó (Suma Autorizados y Entregados)
     const r1 = new sql.Request(transaction);
     await r1.input("per", sql.NVarChar, periodo)
             .input("aut", sql.NVarChar, creado_por || 'Admin')
@@ -28,12 +27,11 @@ export const generarCorteOficial = async (req, res) => {
                 COUNT(P.id), 
                 @aut
               FROM PresupuestosPlanteles PR
-              LEFT JOIN Pedidos P ON PR.usuario_nombre = P.usuario_nombre AND P.estatus = 'AUTORIZADO'
+              LEFT JOIN Pedidos P ON PR.usuario_nombre = P.usuario_nombre AND P.estatus IN ('AUTORIZADO', 'ENTREGADO')
               GROUP BY PR.usuario_nombre
             `);
 
-    // PASO B: Lógica de Arrastre + Inyección de Capital (¡Aquí está la magia!)
-    // Fórmula: (Saldo Viejo - Lo que gastaron este mes) + Nuevo Capital = Nuevo Saldo
+    // PASO B: Lógica de Arrastre + Inyección de Capital
     const r2 = new sql.Request(transaction);
     await r2.input("nuevoCap", sql.Decimal(18,2), nuevo_capital)
             .query(`
@@ -46,13 +44,16 @@ export const generarCorteOficial = async (req, res) => {
                 SELECT SUM(CAST(P.total_pedido AS FLOAT)) as Total
                 FROM Pedidos P
                 WHERE P.usuario_nombre = PR.usuario_nombre 
-                  AND P.estatus = 'AUTORIZADO'
+                  AND P.estatus IN ('AUTORIZADO', 'ENTREGADO')
               ) GastoMes
             `);
 
-    // PASO C: Limpiar pedidos para el nuevo mes (Esto no cambia)
+    // PASO C: Limpiar pedidos y solicitudes para el nuevo mes
     const r3 = new sql.Request(transaction);
-    await r3.query("UPDATE Pedidos SET estatus = 'CERRADO' WHERE estatus = 'AUTORIZADO'");
+    await r3.query("UPDATE Pedidos SET estatus = 'CERRADO' WHERE estatus IN ('AUTORIZADO', 'ENTREGADO')");
+
+    const r4 = new sql.Request(transaction);
+    await r4.query("UPDATE Solicitudes SET estatus = 'CERRADO' WHERE estatus IN ('AUTORIZADO', 'ENTREGADO')");
 
     await transaction.commit();
     res.json({ ok: true, mensaje: `Corte ${periodo} finalizado. Se aplicaron los remanentes y se inyectaron $${nuevo_capital}.` });
@@ -62,6 +63,7 @@ export const generarCorteOficial = async (req, res) => {
     res.status(500).json({ ok: false, mensaje: "Error: " + err.message });
   }
 };
+
 export const getMetricasPlantel = async (req, res) => {
   const { nombre } = req.params; 
 
@@ -73,14 +75,13 @@ export const getMetricasPlantel = async (req, res) => {
         SELECT 
           ISNULL(PR.presupuesto_mensual, 0) as presupuesto_inicial,
           ISNULL(SUM(CAST(P.total_pedido AS FLOAT)), 0) as gasto_total,
-          -- Lógica de Saldo Pendiente: excedente que se arrastra al siguiente mes
           CASE 
             WHEN ISNULL(SUM(CAST(P.total_pedido AS FLOAT)), 0) > ISNULL(PR.presupuesto_mensual, 0) 
             THEN ISNULL(SUM(CAST(P.total_pedido AS FLOAT)), 0) - ISNULL(PR.presupuesto_mensual, 0)
             ELSE 0 
           END as saldo_pendiente
         FROM PresupuestosPlanteles PR
-        LEFT JOIN Pedidos P ON PR.usuario_nombre = P.usuario_nombre AND P.estatus = 'AUTORIZADO'
+        LEFT JOIN Pedidos P ON PR.usuario_nombre = P.usuario_nombre AND P.estatus IN ('AUTORIZADO', 'ENTREGADO')
         WHERE PR.usuario_nombre = @nombre
         GROUP BY PR.presupuesto_mensual
       `);
@@ -106,7 +107,6 @@ export const getMetricasGenerales = async (req, res) => {
         COUNT(P.id) as total_articulos,
         COUNT(DISTINCT P.id_solicitud) as total_folios,
         ISNULL(PR.presupuesto_mensual, 0) as limite_presupuesto,
-        -- Alerta de saldo pendiente para el Admin
         CASE 
           WHEN SUM(CAST(P.total_pedido AS FLOAT)) > ISNULL(PR.presupuesto_mensual, 0) 
           THEN SUM(CAST(P.total_pedido AS FLOAT)) - ISNULL(PR.presupuesto_mensual, 0)
@@ -114,7 +114,7 @@ export const getMetricasGenerales = async (req, res) => {
         END as saldo_pendiente
       FROM Pedidos P
       LEFT JOIN PresupuestosPlanteles PR ON P.usuario_nombre = PR.usuario_nombre
-      WHERE P.estatus = 'AUTORIZADO'
+      WHERE P.estatus IN ('AUTORIZADO', 'ENTREGADO')
       GROUP BY P.usuario_nombre, PR.presupuesto_mensual
     `);
     
@@ -132,7 +132,7 @@ export const getTopArticulos = async (req, res) => {
         articulo_nombre, 
         COUNT(*) as cantidad
       FROM Pedidos
-      WHERE estatus = 'AUTORIZADO'
+      WHERE estatus IN ('AUTORIZADO', 'ENTREGADO')
       GROUP BY articulo_nombre
       ORDER BY cantidad DESC
     `);
@@ -156,7 +156,7 @@ export const getDetallePorPlantel = async (req, res) => {
       .query(`
         SELECT id_solicitud, articulo_nombre, total_pedido, estatus 
         FROM Pedidos 
-        WHERE usuario_nombre = @nombre AND estatus = 'AUTORIZADO'
+        WHERE usuario_nombre = @nombre AND estatus IN ('AUTORIZADO', 'ENTREGADO')
       `);
     res.json({ ok: true, detalle: result.recordset });
   } catch (err) {
@@ -232,5 +232,56 @@ export const getHistorialCortes = async (req, res) => {
   } catch (err) {
     console.error("Error en getHistorialCortes:", err);
     res.status(500).json({ ok: false, mensaje: "Error al obtener historial: " + err.message });
+  }
+};
+
+// ==========================================
+// CONFIRMAR RECEPCIÓN POR EL PLANTEL
+// ==========================================
+export const confirmarEntrega = async (req, res) => {
+  const { id_solicitud } = req.params;
+  
+  try {
+    const pool = await poolPromise;
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+
+    try {
+      // 1. Verificar el estatus
+      const check = await transaction.request()
+        .input('id', sql.Int, id_solicitud)
+        .query("SELECT TOP 1 estatus FROM Pedidos WHERE id_solicitud = @id");
+
+      if (check.recordset.length === 0) {
+        throw new Error("El folio no existe.");
+      }
+      
+      const estatusLimpio = String(check.recordset[0].estatus).trim().toUpperCase();
+
+      if (estatusLimpio !== 'AUTORIZADO') {
+        throw new Error(`No se puede recibir. El estatus actual en BD es: '${estatusLimpio}'`);
+      }
+
+      // 2. Cambiar a ENTREGADO en Solicitudes
+      await transaction.request()
+        .input('id', sql.Int, id_solicitud)
+        .query("UPDATE Solicitudes SET estatus = 'ENTREGADO' WHERE id = @id");
+
+      // 3. Cambiar a ENTREGADO en el detalle de Pedidos
+      await transaction.request()
+        .input('id', sql.Int, id_solicitud)
+        .query("UPDATE Pedidos SET estatus = 'ENTREGADO' WHERE id_solicitud = @id");
+
+      await transaction.commit();
+      res.json({ ok: true, mensaje: "¡Acuse de recibo guardado exitosamente!" });
+
+    } catch (innerErr) {
+      await transaction.rollback();
+      throw innerErr;
+    }
+
+  } catch (err) {
+    console.error("Error al confirmar entrega:", err.message);
+    res.status(500).json({ ok: false, mensaje: err.message });
   }
 };
